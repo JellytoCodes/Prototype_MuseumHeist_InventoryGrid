@@ -7,45 +7,23 @@
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
 #include "Components/SizeBox.h"
-#include "Components/Spacer.h"
 #include "Components/TextBlock.h"
-#include "Components/UniformGridPanel.h"
-#include "Components/UniformGridSlot.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
+#include "InputCoreTypes.h"
 #include "Inventory/HeistInventoryComponent.h"
+#include "UI/HeistInventoryDragDropOperation.h"
+#include "UI/HeistInventoryItemWidget.h"
+#include "UI/HeistInventorySlotWidget.h"
+#include "UI/HeistQuickSlotPrototypeWidget.h"
 
 namespace
 {
-	void SetTextSize(UTextBlock* TextBlock, const int32 Size)
+	void SetPrototypeTextSize(UTextBlock* TextBlock, const int32 Size)
 	{
 		FSlateFontInfo Font = TextBlock->GetFont();
 		Font.Size = Size;
 		TextBlock->SetFont(Font);
-	}
-
-	FString GetShortItemName(const FName ItemId)
-	{
-		FString Result = ItemId.ToString();
-		int32 SeparatorIndex = INDEX_NONE;
-		if (Result.FindLastChar(TEXT('_'), SeparatorIndex))
-		{
-			Result.RightChopInline(SeparatorIndex + 1);
-		}
-		return Result;
-	}
-
-	FLinearColor GetItemColor(const int32 InstanceId)
-	{
-		static const FLinearColor Colors[] =
-		{
-			FLinearColor(0.16f, 0.42f, 0.58f, 1.0f),
-			FLinearColor(0.35f, 0.25f, 0.55f, 1.0f),
-			FLinearColor(0.18f, 0.48f, 0.32f, 1.0f),
-			FLinearColor(0.58f, 0.28f, 0.18f, 1.0f),
-			FLinearColor(0.48f, 0.38f, 0.16f, 1.0f)
-		};
-		return Colors[FMath::Abs(InstanceId) % UE_ARRAY_COUNT(Colors)];
 	}
 }
 
@@ -67,14 +45,61 @@ void UHeistInventoryDebugWidget::SetInventoryComponent(UHeistInventoryComponent*
 void UHeistInventoryDebugWidget::SetSelectedInstanceId(const int32 InSelectedInstanceId)
 {
 	SelectedInstanceId = InSelectedInstanceId;
-	RefreshInventory();
+	if (InventoryComponent)
+	{
+		RefreshSelectionDetails(InventoryComponent->GetItems());
+	}
+}
+
+void UHeistInventoryDebugWidget::SelectItem(const int32 InstanceId)
+{
+	SelectedInstanceId = InstanceId;
+	if (InventoryComponent)
+	{
+		RefreshSelectionDetails(InventoryComponent->GetItems());
+	}
+}
+
+void UHeistInventoryDebugWidget::RequestRotateItem(const int32 InstanceId)
+{
+	if (!InventoryComponent)
+	{
+		return;
+	}
+
+	const TArray<FHeistInventoryItem> Items = InventoryComponent->GetItems();
+	const FHeistInventoryItem* Item = Items.FindByPredicate([InstanceId](const FHeistInventoryItem& Candidate)
+	{
+		return Candidate.InstanceId == InstanceId;
+	});
+	if (Item)
+	{
+		InventoryComponent->Server_RequestMoveItem(Item->InstanceId, Item->TopLeftIndex, !Item->bRotated);
+	}
+}
+
+void UHeistInventoryDebugWidget::NotifyDragStarted(UHeistInventoryDragDropOperation* DragOperation)
+{
+	ActiveDragOperation = DragOperation;
+	SelectItem(DragOperation ? DragOperation->InstanceId : INDEX_NONE);
+	if (DragStatusText)
+	{
+		DragStatusText->SetText(FText::FromString(TEXT("Dragging: move over grid for placement preview")));
+		DragStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(0.65f, 0.78f, 0.9f)));
+	}
+}
+
+void UHeistInventoryDebugWidget::NotifyDragFinished()
+{
+	ActiveDragOperation = nullptr;
+	ClearPlacementPreview();
 }
 
 void UHeistInventoryDebugWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-
-	BuildDebugLayout();
+	SetIsFocusable(true);
+	BuildPrototypeLayout();
 	if (InventoryComponent)
 	{
 		InventoryComponent->OnInventoryChanged.AddUniqueDynamic(this, &ThisClass::RefreshInventory);
@@ -91,7 +116,107 @@ void UHeistInventoryDebugWidget::NativeDestruct()
 	Super::NativeDestruct();
 }
 
-void UHeistInventoryDebugWidget::BuildDebugLayout()
+FReply UHeistInventoryDebugWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (InKeyEvent.GetKey() == EKeys::R && SelectedInstanceId != INDEX_NONE)
+	{
+		if (ActiveDragOperation)
+		{
+			const int32 OldWidth = InventoryComponent->GetEffectiveWidth(
+				ActiveDragOperation->ItemSnapshot,
+				ActiveDragOperation->bRotated);
+			const int32 OldHeight = InventoryComponent->GetEffectiveHeight(
+				ActiveDragOperation->ItemSnapshot,
+				ActiveDragOperation->bRotated);
+			ActiveDragOperation->bRotated = !ActiveDragOperation->bRotated;
+			const int32 NewWidth = InventoryComponent->GetEffectiveWidth(
+				ActiveDragOperation->ItemSnapshot,
+				ActiveDragOperation->bRotated);
+			const int32 NewHeight = InventoryComponent->GetEffectiveHeight(
+				ActiveDragOperation->ItemSnapshot,
+				ActiveDragOperation->bRotated);
+			const float RelativeGrabX = (ActiveDragOperation->GrabCellOffset.X + 0.5f) / OldWidth;
+			const float RelativeGrabY = (ActiveDragOperation->GrabCellOffset.Y + 0.5f) / OldHeight;
+			ActiveDragOperation->GrabCellOffset.X = FMath::Clamp(FMath::FloorToInt(RelativeGrabX * NewWidth), 0, NewWidth - 1);
+			ActiveDragOperation->GrabCellOffset.Y = FMath::Clamp(FMath::FloorToInt(RelativeGrabY * NewHeight), 0, NewHeight - 1);
+			if (UHeistInventoryItemWidget* DragVisual = Cast<UHeistInventoryItemWidget>(ActiveDragOperation->DefaultDragVisual))
+			{
+				DragVisual->SetPreviewRotation(ActiveDragOperation->bRotated);
+			}
+			ClearPlacementPreview();
+			if (DragStatusText)
+			{
+				DragStatusText->SetText(FText::FromString(TEXT("Rotation preview changed; move over grid to validate")));
+			}
+			return FReply::Handled();
+		}
+
+		RequestRotateItem(SelectedInstanceId);
+		return FReply::Handled();
+	}
+	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
+}
+
+bool UHeistInventoryDebugWidget::NativeOnDragOver(
+	const FGeometry& InGeometry,
+	const FDragDropEvent& InDragDropEvent,
+	UDragDropOperation* InOperation)
+{
+	UHeistInventoryDragDropOperation* DragOperation = Cast<UHeistInventoryDragDropOperation>(InOperation);
+	if (!DragOperation)
+	{
+		return Super::NativeOnDragOver(InGeometry, InDragDropEvent, InOperation);
+	}
+
+	UpdatePlacementPreview(DragOperation, InDragDropEvent.GetScreenSpacePosition());
+	return true;
+}
+
+void UHeistInventoryDebugWidget::NativeOnDragLeave(const FDragDropEvent& InDragDropEvent, UDragDropOperation* InOperation)
+{
+	ClearPlacementPreview();
+	Super::NativeOnDragLeave(InDragDropEvent, InOperation);
+}
+
+bool UHeistInventoryDebugWidget::NativeOnDrop(
+	const FGeometry& InGeometry,
+	const FDragDropEvent& InDragDropEvent,
+	UDragDropOperation* InOperation)
+{
+	UHeistInventoryDragDropOperation* DragOperation = Cast<UHeistInventoryDragDropOperation>(InOperation);
+	if (!DragOperation || !InventoryComponent)
+	{
+		return Super::NativeOnDrop(InGeometry, InDragDropEvent, InOperation);
+	}
+
+	bool bInsideGrid = false;
+	int32 HoveredSlot = INDEX_NONE;
+	int32 TopLeftIndex = INDEX_NONE;
+	GetDropCoordinates(InDragDropEvent.GetScreenSpacePosition(), DragOperation, bInsideGrid, HoveredSlot, TopLeftIndex);
+
+	if (bInsideGrid)
+	{
+		const bool bValid = TopLeftIndex != INDEX_NONE && InventoryComponent->CanPlaceItem(
+			DragOperation->ItemSnapshot,
+			TopLeftIndex,
+			DragOperation->bRotated,
+			DragOperation->InstanceId);
+		if (bValid)
+		{
+			InventoryComponent->Server_RequestMoveItem(DragOperation->InstanceId, TopLeftIndex, DragOperation->bRotated);
+		}
+	}
+	else
+	{
+		InventoryComponent->Server_RequestDropItem(DragOperation->InstanceId);
+	}
+
+	ClearPlacementPreview();
+	ActiveDragOperation = nullptr;
+	return true;
+}
+
+void UHeistInventoryDebugWidget::BuildPrototypeLayout()
 {
 	if (WidgetTree->RootWidget)
 	{
@@ -102,8 +227,8 @@ void UHeistInventoryDebugWidget::BuildDebugLayout()
 	WidgetTree->RootWidget = RootCanvas;
 
 	USizeBox* PanelSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("PanelSize"));
-	PanelSize->SetWidthOverride(760.0f);
-	PanelSize->SetHeightOverride(650.0f);
+	PanelSize->SetWidthOverride(790.0f);
+	PanelSize->SetHeightOverride(670.0f);
 	UCanvasPanelSlot* PanelCanvasSlot = RootCanvas->AddChildToCanvas(PanelSize);
 	PanelCanvasSlot->SetAnchors(FAnchors(0.5f, 0.5f));
 	PanelCanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
@@ -119,18 +244,18 @@ void UHeistInventoryDebugWidget::BuildDebugLayout()
 	Background->SetContent(Content);
 
 	UTextBlock* Title = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryTitle"));
-	Title->SetText(FText::FromString(TEXT("MUSEUM HEIST  /  FIELD BACKPACK")));
+	Title->SetText(FText::FromString(TEXT("INV-SPIKE-002  /  DRAG & DROP BACKPACK")));
 	Title->SetColorAndOpacity(FSlateColor(FLinearColor(0.95f, 0.78f, 0.28f)));
 	Title->SetJustification(ETextJustify::Center);
-	SetTextSize(Title, 28);
+	SetPrototypeTextSize(Title, 25);
 	Content->AddChildToVerticalBox(Title)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f));
 
 	UTextBlock* Subtitle = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventorySubtitle"));
-	Subtitle->SetText(FText::FromString(TEXT("4 x 5 GRID  |  SERVER CONFIRMED STATE")));
+	Subtitle->SetText(FText::FromString(TEXT("Drag items between cells, onto Q/E/R, or outside the grid")));
 	Subtitle->SetColorAndOpacity(FSlateColor(FLinearColor(0.46f, 0.58f, 0.7f)));
 	Subtitle->SetJustification(ETextJustify::Center);
-	SetTextSize(Subtitle, 13);
-	Content->AddChildToVerticalBox(Subtitle)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 18.0f));
+	SetPrototypeTextSize(Subtitle, 13);
+	Content->AddChildToVerticalBox(Subtitle)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 16.0f));
 
 	UHorizontalBox* MainRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("MainRow"));
 	UVerticalBoxSlot* MainRowSlot = Content->AddChildToVerticalBox(MainRow);
@@ -139,52 +264,51 @@ void UHeistInventoryDebugWidget::BuildDebugLayout()
 	UVerticalBox* GridColumn = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("GridColumn"));
 	UHorizontalBoxSlot* GridColumnSlot = MainRow->AddChildToHorizontalBox(GridColumn);
 	GridColumnSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	GridColumnSlot->SetPadding(FMargin(0.0f, 0.0f, 16.0f, 0.0f));
+	GridColumnSlot->SetPadding(FMargin(0.0f, 0.0f, 18.0f, 0.0f));
 
 	UTextBlock* GridHeader = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("GridHeader"));
-	GridHeader->SetText(FText::FromString(TEXT("BACKPACK STORAGE")));
+	GridHeader->SetText(FText::FromString(TEXT("4 x 5 STORAGE")));
 	GridHeader->SetColorAndOpacity(FSlateColor(FLinearColor(0.76f, 0.82f, 0.9f)));
-	SetTextSize(GridHeader, 16);
+	SetPrototypeTextSize(GridHeader, 16);
 	GridColumn->AddChildToVerticalBox(GridHeader)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 8.0f));
 
-	GridPanel = WidgetTree->ConstructWidget<UUniformGridPanel>(UUniformGridPanel::StaticClass(), TEXT("InventoryGrid"));
-	GridPanel->SetSlotPadding(FMargin(3.0f));
-	GridPanel->SetMinDesiredSlotWidth(72.0f);
-	GridPanel->SetMinDesiredSlotHeight(72.0f);
-	GridColumn->AddChildToVerticalBox(GridPanel)->SetHorizontalAlignment(HAlign_Center);
+	USizeBox* GridSizeBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("GridSizeBox"));
+	GridSizeBox->SetWidthOverride(CellPitch * UHeistInventoryComponent::DefaultGridWidth - CellGap);
+	GridSizeBox->SetHeightOverride(CellPitch * UHeistInventoryComponent::DefaultGridHeight - CellGap);
+	GridColumn->AddChildToVerticalBox(GridSizeBox)->SetHorizontalAlignment(HAlign_Center);
 
-	GridCells.Reset();
-	GridCellBorders.Reset();
-	constexpr int32 CellCount = UHeistInventoryComponent::DefaultGridWidth * UHeistInventoryComponent::DefaultGridHeight;
-	GridCells.Reserve(CellCount);
-	GridCellBorders.Reserve(CellCount);
-	for (int32 Index = 0; Index < CellCount; ++Index)
+	GridCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("InventoryGridCanvas"));
+	GridSizeBox->SetContent(GridCanvas);
+
+	SlotWidgets.Reset();
+	constexpr int32 SlotCount = UHeistInventoryComponent::DefaultGridWidth * UHeistInventoryComponent::DefaultGridHeight;
+	SlotWidgets.Reserve(SlotCount);
+	for (int32 SlotIndex = 0; SlotIndex < SlotCount; ++SlotIndex)
 	{
-		UBorder* CellBorder = WidgetTree->ConstructWidget<UBorder>();
-		CellBorder->SetBrushColor(FLinearColor(0.055f, 0.075f, 0.105f, 1.0f));
-		CellBorder->SetPadding(FMargin(4.0f));
-		GridCellBorders.Add(CellBorder);
+		UHeistInventorySlotWidget* SlotWidget = CreateWidget<UHeistInventorySlotWidget>(GetOwningPlayer(), UHeistInventorySlotWidget::StaticClass());
+		SlotWidget->InitializeSlot(SlotIndex);
+		SlotWidgets.Add(SlotWidget);
 
-		UTextBlock* CellText = WidgetTree->ConstructWidget<UTextBlock>();
-		CellText->SetText(FText::FromString(TEXT("-")));
-		CellText->SetJustification(ETextJustify::Center);
-		CellText->SetColorAndOpacity(FSlateColor(FLinearColor(0.32f, 0.4f, 0.48f)));
-		SetTextSize(CellText, 15);
-		CellBorder->SetContent(CellText);
-		GridCells.Add(CellText);
-
-		const int32 X = Index % UHeistInventoryComponent::DefaultGridWidth;
-		const int32 Y = Index / UHeistInventoryComponent::DefaultGridWidth;
-		UUniformGridSlot* GridSlot = GridPanel->AddChildToUniformGrid(CellBorder, Y, X);
-		GridSlot->SetHorizontalAlignment(HAlign_Fill);
-		GridSlot->SetVerticalAlignment(VAlign_Fill);
+		const int32 X = SlotIndex % UHeistInventoryComponent::DefaultGridWidth;
+		const int32 Y = SlotIndex / UHeistInventoryComponent::DefaultGridWidth;
+		UCanvasPanelSlot* CanvasSlot = GridCanvas->AddChildToCanvas(SlotWidget);
+		CanvasSlot->SetPosition(FVector2D(X * CellPitch, Y * CellPitch));
+		CanvasSlot->SetSize(FVector2D(CellSize, CellSize));
+		CanvasSlot->SetZOrder(0);
 	}
 
 	StatsText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryStats"));
 	StatsText->SetColorAndOpacity(FSlateColor(FLinearColor(0.72f, 0.8f, 0.88f)));
 	StatsText->SetJustification(ETextJustify::Center);
-	SetTextSize(StatsText, 15);
-	GridColumn->AddChildToVerticalBox(StatsText)->SetPadding(FMargin(0.0f, 12.0f, 0.0f, 0.0f));
+	SetPrototypeTextSize(StatsText, 14);
+	GridColumn->AddChildToVerticalBox(StatsText)->SetPadding(FMargin(0.0f, 10.0f, 0.0f, 0.0f));
+
+	DragStatusText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("DragStatus"));
+	DragStatusText->SetText(FText::FromString(TEXT("Green = valid placement    Red = rejected placement")));
+	DragStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(0.52f, 0.62f, 0.72f)));
+	DragStatusText->SetJustification(ETextJustify::Center);
+	SetPrototypeTextSize(DragStatusText, 12);
+	GridColumn->AddChildToVerticalBox(DragStatusText)->SetPadding(FMargin(0.0f, 8.0f, 0.0f, 0.0f));
 
 	UBorder* DetailBackground = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("DetailBackground"));
 	DetailBackground->SetBrushColor(FLinearColor(0.035f, 0.05f, 0.075f, 1.0f));
@@ -198,57 +322,77 @@ void UHeistInventoryDebugWidget::BuildDebugLayout()
 	UTextBlock* SelectedHeader = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("SelectedHeader"));
 	SelectedHeader->SetText(FText::FromString(TEXT("SELECTED ITEM")));
 	SelectedHeader->SetColorAndOpacity(FSlateColor(FLinearColor(0.95f, 0.78f, 0.28f)));
-	SetTextSize(SelectedHeader, 16);
+	SetPrototypeTextSize(SelectedHeader, 16);
 	DetailColumn->AddChildToVerticalBox(SelectedHeader)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 8.0f));
 
 	SelectedItemText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("SelectedItemText"));
 	SelectedItemText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.93f, 0.96f)));
 	SelectedItemText->SetAutoWrapText(true);
-	SetTextSize(SelectedItemText, 16);
+	SetPrototypeTextSize(SelectedItemText, 15);
 	DetailColumn->AddChildToVerticalBox(SelectedItemText)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 18.0f));
 
 	UTextBlock* QuickSlotHeader = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("QuickSlotHeader"));
-	QuickSlotHeader->SetText(FText::FromString(TEXT("QUICK SLOT REFERENCES")));
+	QuickSlotHeader->SetText(FText::FromString(TEXT("DROP ITEM ON QUICK SLOT")));
 	QuickSlotHeader->SetColorAndOpacity(FSlateColor(FLinearColor(0.56f, 0.72f, 0.88f)));
-	SetTextSize(QuickSlotHeader, 15);
+	SetPrototypeTextSize(QuickSlotHeader, 14);
 	DetailColumn->AddChildToVerticalBox(QuickSlotHeader)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 8.0f));
 
-	QuickSlotTexts.Reset();
-	static const TCHAR* QuickSlotNames[] = { TEXT("Q"), TEXT("E"), TEXT("R") };
-	for (int32 Index = 0; Index < UHeistInventoryComponent::QuickSlotCount; ++Index)
+	QuickSlotWidgets.Reset();
+	for (int32 QuickSlotIndex = 0; QuickSlotIndex < UHeistInventoryComponent::QuickSlotCount; ++QuickSlotIndex)
 	{
-		UBorder* QuickSlotBorder = WidgetTree->ConstructWidget<UBorder>();
-		QuickSlotBorder->SetBrushColor(FLinearColor(0.07f, 0.095f, 0.13f, 1.0f));
-		QuickSlotBorder->SetPadding(FMargin(10.0f, 8.0f));
-		DetailColumn->AddChildToVerticalBox(QuickSlotBorder)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 6.0f));
-
-		UTextBlock* QuickSlotText = WidgetTree->ConstructWidget<UTextBlock>();
-		QuickSlotText->SetText(FText::FromString(FString::Printf(TEXT("%s  /  Empty"), QuickSlotNames[Index])));
-		QuickSlotText->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.84f, 0.9f)));
-		SetTextSize(QuickSlotText, 14);
-		QuickSlotBorder->SetContent(QuickSlotText);
-		QuickSlotTexts.Add(QuickSlotText);
+		UHeistQuickSlotPrototypeWidget* QuickSlotWidget = CreateWidget<UHeistQuickSlotPrototypeWidget>(GetOwningPlayer(), UHeistQuickSlotPrototypeWidget::StaticClass());
+		QuickSlotWidget->InitializeQuickSlot(InventoryComponent, QuickSlotIndex);
+		QuickSlotWidgets.Add(QuickSlotWidget);
+		DetailColumn->AddChildToVerticalBox(QuickSlotWidget)->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 7.0f));
 	}
 
 	UTextBlock* Controls = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("InventoryControls"));
 	Controls->SetText(FText::FromString(
-		TEXT("TEST CONTROLS\n[ / ]  Select item\nArrow Keys  Move\nT  Rotate    Delete  Drop\n1 / 2 / 3  Assign Q / E / R\nI or Tab  Close")));
+		TEXT("LEFT DRAG  Move item\nR / RIGHT CLICK  Rotate selected\nDROP OUTSIDE GRID  Drop to world\nDROP ON Q/E/R  Assign reference\nI or Tab  Close")));
 	Controls->SetColorAndOpacity(FSlateColor(FLinearColor(0.52f, 0.62f, 0.72f)));
 	Controls->SetAutoWrapText(true);
-	SetTextSize(Controls, 13);
+	SetPrototypeTextSize(Controls, 13);
 	DetailColumn->AddChildToVerticalBox(Controls)->SetPadding(FMargin(0.0f, 18.0f, 0.0f, 0.0f));
 }
 
 void UHeistInventoryDebugWidget::RefreshInventory()
 {
-	if (!InventoryComponent || GridCells.IsEmpty() || !StatsText || !SelectedItemText)
+	if (!InventoryComponent || !GridCanvas || !StatsText || !SelectedItemText)
 	{
 		return;
 	}
 
-	TArray<int32> Occupancy;
-	Occupancy.Init(INDEX_NONE, InventoryComponent->GetGridWidth() * InventoryComponent->GetGridHeight());
 	const TArray<FHeistInventoryItem> Items = InventoryComponent->GetItems();
+	if (!Items.ContainsByPredicate([this](const FHeistInventoryItem& Item) { return Item.InstanceId == SelectedInstanceId; }))
+	{
+		SelectedInstanceId = Items.IsEmpty() ? INDEX_NONE : Items[0].InstanceId;
+	}
+
+	ClearPlacementPreview();
+	RebuildItemWidgets(Items);
+	RefreshSelectionDetails(Items);
+	RefreshQuickSlots(Items);
+
+	StatsText->SetText(FText::FromString(FString::Printf(
+		TEXT("ITEMS %d    USED %d / %d    WEIGHT %d    SCORE %d"),
+		Items.Num(),
+		InventoryComponent->GetUsedSlotCount(),
+		InventoryComponent->GetGridWidth() * InventoryComponent->GetGridHeight(),
+		InventoryComponent->GetTotalWeight(),
+		InventoryComponent->GetTotalScore())));
+}
+
+void UHeistInventoryDebugWidget::RebuildItemWidgets(const TArray<FHeistInventoryItem>& Items)
+{
+	for (UHeistInventoryItemWidget* ItemWidget : ItemWidgets)
+	{
+		if (ItemWidget)
+		{
+			ItemWidget->RemoveFromParent();
+		}
+	}
+	ItemWidgets.Reset();
+
 	for (const FHeistInventoryItem& Item : Items)
 	{
 		if (!InventoryComponent->IsValidSlotIndex(Item.TopLeftIndex))
@@ -256,87 +400,174 @@ void UHeistInventoryDebugWidget::RefreshInventory()
 			continue;
 		}
 
-		const FIntPoint TopLeft = InventoryComponent->IndexToCoord(Item.TopLeftIndex);
+		UHeistInventoryItemWidget* ItemWidget = CreateWidget<UHeistInventoryItemWidget>(GetOwningPlayer(), UHeistInventoryItemWidget::StaticClass());
+		ItemWidget->InitializeItem(this, Item, CellPitch);
+		ItemWidgets.Add(ItemWidget);
+
+		const FIntPoint Coord = InventoryComponent->IndexToCoord(Item.TopLeftIndex);
 		const int32 Width = InventoryComponent->GetEffectiveWidth(Item, Item.bRotated);
 		const int32 Height = InventoryComponent->GetEffectiveHeight(Item, Item.bRotated);
-		for (int32 Y = TopLeft.Y; Y < TopLeft.Y + Height; ++Y)
-		{
-			for (int32 X = TopLeft.X; X < TopLeft.X + Width; ++X)
-			{
-				const int32 SlotIndex = InventoryComponent->CoordToIndex(X, Y);
-				if (Occupancy.IsValidIndex(SlotIndex))
-				{
-					Occupancy[SlotIndex] = Item.InstanceId;
-				}
-			}
-		}
+		UCanvasPanelSlot* CanvasSlot = GridCanvas->AddChildToCanvas(ItemWidget);
+		CanvasSlot->SetPosition(FVector2D(Coord.X * CellPitch, Coord.Y * CellPitch));
+		CanvasSlot->SetSize(FVector2D(Width * CellPitch - CellGap, Height * CellPitch - CellGap));
+		CanvasSlot->SetZOrder(10);
 	}
+}
 
-	for (int32 Index = 0; Index < GridCells.Num(); ++Index)
+void UHeistInventoryDebugWidget::RefreshSelectionDetails(const TArray<FHeistInventoryItem>& Items)
+{
+	if (!SelectedItemText)
 	{
-		const int32 InstanceId = Occupancy.IsValidIndex(Index) ? Occupancy[Index] : INDEX_NONE;
-		if (InstanceId == INDEX_NONE)
-		{
-			GridCells[Index]->SetText(FText::FromString(TEXT("-")));
-			GridCells[Index]->SetColorAndOpacity(FSlateColor(FLinearColor(0.32f, 0.4f, 0.48f)));
-			GridCellBorders[Index]->SetBrushColor(FLinearColor(0.055f, 0.075f, 0.105f, 1.0f));
-			continue;
-		}
-
-		const bool bSelected = InstanceId == SelectedInstanceId;
-		GridCells[Index]->SetText(FText::FromString(FString::Printf(TEXT("#%d"), InstanceId)));
-		GridCells[Index]->SetColorAndOpacity(FSlateColor(bSelected ? FLinearColor(0.08f, 0.06f, 0.02f) : FLinearColor::White));
-		GridCellBorders[Index]->SetBrushColor(bSelected
-			? FLinearColor(0.95f, 0.72f, 0.2f, 1.0f)
-			: GetItemColor(InstanceId));
+		return;
 	}
-
-	StatsText->SetText(FText::FromString(FString::Printf(
-		TEXT("ITEMS %d    USED %d / %d\nWEIGHT %d    SCORE %d"),
-		Items.Num(),
-		InventoryComponent->GetUsedSlotCount(),
-		InventoryComponent->GetGridWidth() * InventoryComponent->GetGridHeight(),
-		InventoryComponent->GetTotalWeight(),
-		InventoryComponent->GetTotalScore())));
 
 	const FHeistInventoryItem* SelectedItem = Items.FindByPredicate([this](const FHeistInventoryItem& Item)
 	{
 		return Item.InstanceId == SelectedInstanceId;
 	});
-	if (SelectedItem)
-	{
-		SelectedItemText->SetText(FText::FromString(FString::Printf(
-			TEXT("%s\nInstance #%d\nSize  %d x %d\nTop Left  %d\nRotated  %s\nWeight  %d\nScore  %d"),
-			*SelectedItem->ItemId.ToString(),
-			SelectedItem->InstanceId,
-			InventoryComponent->GetEffectiveWidth(*SelectedItem, SelectedItem->bRotated),
-			InventoryComponent->GetEffectiveHeight(*SelectedItem, SelectedItem->bRotated),
-			SelectedItem->TopLeftIndex,
-			SelectedItem->bRotated ? TEXT("YES") : TEXT("NO"),
-			SelectedItem->Weight,
-			SelectedItem->ScoreValue)));
-	}
-	else
+	if (!SelectedItem)
 	{
 		SelectedItemText->SetText(FText::FromString(TEXT("No item selected")));
+		return;
 	}
 
-	const TArray<int32> QuickSlots = InventoryComponent->GetQuickSlots();
-	static const TCHAR* QuickSlotNames[] = { TEXT("Q"), TEXT("E"), TEXT("R") };
-	for (int32 Index = 0; Index < QuickSlotTexts.Num(); ++Index)
-	{
-		const int32 QuickSlotInstanceId = QuickSlots.IsValidIndex(Index) ? QuickSlots[Index] : INDEX_NONE;
-		const FHeistInventoryItem* QuickSlotItem = Items.FindByPredicate([QuickSlotInstanceId](const FHeistInventoryItem& Item)
-		{
-			return Item.InstanceId == QuickSlotInstanceId;
-		});
+	SelectedItemText->SetText(FText::FromString(FString::Printf(
+		TEXT("%s\nInstance #%d\nSize %d x %d\nTop Left %d\nRotated %s\nWeight %d    Score %d"),
+		*SelectedItem->ItemId.ToString(),
+		SelectedItem->InstanceId,
+		InventoryComponent->GetEffectiveWidth(*SelectedItem, SelectedItem->bRotated),
+		InventoryComponent->GetEffectiveHeight(*SelectedItem, SelectedItem->bRotated),
+		SelectedItem->TopLeftIndex,
+		SelectedItem->bRotated ? TEXT("YES") : TEXT("NO"),
+		SelectedItem->Weight,
+		SelectedItem->ScoreValue)));
+}
 
-		const FString QuickSlotValue = QuickSlotItem
-			? FString::Printf(TEXT("#%d  %s"), QuickSlotItem->InstanceId, *GetShortItemName(QuickSlotItem->ItemId))
-			: FString(TEXT("Empty"));
-		QuickSlotTexts[Index]->SetText(FText::FromString(FString::Printf(
-			TEXT("%s  /  %s"),
-			QuickSlotNames[Index],
-			*QuickSlotValue)));
+void UHeistInventoryDebugWidget::RefreshQuickSlots(const TArray<FHeistInventoryItem>& Items)
+{
+	const TArray<int32> QuickSlots = InventoryComponent->GetQuickSlots();
+	for (int32 Index = 0; Index < QuickSlotWidgets.Num(); ++Index)
+	{
+		const int32 InstanceId = QuickSlots.IsValidIndex(Index) ? QuickSlots[Index] : INDEX_NONE;
+		const FHeistInventoryItem* Item = Items.FindByPredicate([InstanceId](const FHeistInventoryItem& Candidate)
+		{
+			return Candidate.InstanceId == InstanceId;
+		});
+		QuickSlotWidgets[Index]->SetAssignedItem(InstanceId, Item ? Item->ItemId : NAME_None);
+	}
+}
+
+bool UHeistInventoryDebugWidget::UpdatePlacementPreview(
+	UHeistInventoryDragDropOperation* DragOperation,
+	const FVector2D& ScreenPosition)
+{
+	ClearPlacementPreview();
+	if (!InventoryComponent || !DragOperation)
+	{
+		return false;
+	}
+
+	bool bInsideGrid = false;
+	int32 HoveredSlot = INDEX_NONE;
+	int32 TopLeftIndex = INDEX_NONE;
+	GetDropCoordinates(ScreenPosition, DragOperation, bInsideGrid, HoveredSlot, TopLeftIndex);
+	if (!bInsideGrid)
+	{
+		if (DragStatusText)
+		{
+			DragStatusText->SetText(FText::FromString(TEXT("Release outside grid to drop item into the world")));
+			DragStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.55f, 0.25f)));
+		}
+		return false;
+	}
+
+	const bool bValid = TopLeftIndex != INDEX_NONE && InventoryComponent->CanPlaceItem(
+		DragOperation->ItemSnapshot,
+		TopLeftIndex,
+		DragOperation->bRotated,
+		DragOperation->InstanceId);
+	DragOperation->PreviewTopLeftIndex = TopLeftIndex;
+	DragOperation->bPreviewValid = bValid;
+
+	if (TopLeftIndex != INDEX_NONE)
+	{
+		const FIntPoint TopLeft = InventoryComponent->IndexToCoord(TopLeftIndex);
+		const int32 Width = InventoryComponent->GetEffectiveWidth(DragOperation->ItemSnapshot, DragOperation->bRotated);
+		const int32 Height = InventoryComponent->GetEffectiveHeight(DragOperation->ItemSnapshot, DragOperation->bRotated);
+		for (int32 Y = TopLeft.Y; Y < TopLeft.Y + Height; ++Y)
+		{
+			for (int32 X = TopLeft.X; X < TopLeft.X + Width; ++X)
+			{
+				const int32 SlotIndex = InventoryComponent->CoordToIndex(X, Y);
+				if (SlotWidgets.IsValidIndex(SlotIndex))
+				{
+					SlotWidgets[SlotIndex]->SetPreviewState(true, bValid);
+				}
+			}
+		}
+	}
+	else if (SlotWidgets.IsValidIndex(HoveredSlot))
+	{
+		SlotWidgets[HoveredSlot]->SetPreviewState(true, false);
+	}
+
+	if (DragStatusText)
+	{
+		DragStatusText->SetText(FText::FromString(bValid
+			? FString::Printf(TEXT("Valid target: slot %d"), TopLeftIndex)
+			: FString(TEXT("Invalid target: bounds or overlap"))));
+		DragStatusText->SetColorAndOpacity(FSlateColor(bValid
+			? FLinearColor(0.25f, 0.9f, 0.42f)
+			: FLinearColor(0.95f, 0.25f, 0.25f)));
+	}
+	return bValid;
+}
+
+bool UHeistInventoryDebugWidget::GetDropCoordinates(
+	const FVector2D& ScreenPosition,
+	const UHeistInventoryDragDropOperation* DragOperation,
+	bool& bOutInsideGrid,
+	int32& OutHoveredSlot,
+	int32& OutTopLeftIndex) const
+{
+	bOutInsideGrid = false;
+	OutHoveredSlot = INDEX_NONE;
+	OutTopLeftIndex = INDEX_NONE;
+	if (!GridCanvas || !InventoryComponent || !DragOperation)
+	{
+		return false;
+	}
+
+	const FGeometry GridGeometry = GridCanvas->GetCachedGeometry();
+	if (!GridGeometry.IsUnderLocation(ScreenPosition))
+	{
+		return false;
+	}
+
+	bOutInsideGrid = true;
+	const FVector2D LocalPosition = GridGeometry.AbsoluteToLocal(ScreenPosition);
+	const int32 HoverX = FMath::Clamp(FMath::FloorToInt(LocalPosition.X / CellPitch), 0, InventoryComponent->GetGridWidth() - 1);
+	const int32 HoverY = FMath::Clamp(FMath::FloorToInt(LocalPosition.Y / CellPitch), 0, InventoryComponent->GetGridHeight() - 1);
+	OutHoveredSlot = InventoryComponent->CoordToIndex(HoverX, HoverY);
+	OutTopLeftIndex = InventoryComponent->CoordToIndex(
+		HoverX - DragOperation->GrabCellOffset.X,
+		HoverY - DragOperation->GrabCellOffset.Y);
+	return true;
+}
+
+void UHeistInventoryDebugWidget::ClearPlacementPreview()
+{
+	for (UHeistInventorySlotWidget* SlotWidget : SlotWidgets)
+	{
+		if (SlotWidget)
+		{
+			SlotWidget->SetPreviewState(false, false);
+		}
+	}
+
+	if (DragStatusText)
+	{
+		DragStatusText->SetText(FText::FromString(TEXT("Green = valid placement    Red = rejected placement")));
+		DragStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(0.52f, 0.62f, 0.72f)));
 	}
 }

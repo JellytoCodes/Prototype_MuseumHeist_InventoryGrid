@@ -71,7 +71,6 @@ void AHeistPrototypeCharacter::SetupPlayerInputComponent(UInputComponent* Player
 	PlayerInputComponent->BindAction(TEXT("InventoryMoveDown"), IE_Pressed, this, &ThisClass::MoveSelectedDown);
 	PlayerInputComponent->BindAction(TEXT("InventoryMoveLeft"), IE_Pressed, this, &ThisClass::MoveSelectedLeft);
 	PlayerInputComponent->BindAction(TEXT("InventoryMoveRight"), IE_Pressed, this, &ThisClass::MoveSelectedRight);
-	PlayerInputComponent->BindAction(TEXT("InventoryRotate"), IE_Pressed, this, &ThisClass::RotateSelectedItem);
 	PlayerInputComponent->BindAction(TEXT("InventoryDrop"), IE_Pressed, this, &ThisClass::DropSelectedItem);
 	PlayerInputComponent->BindAction(TEXT("InventoryQuickSlot0"), IE_Pressed, this, &ThisClass::AssignSelectedToQuickSlot0);
 	PlayerInputComponent->BindAction(TEXT("InventoryQuickSlot1"), IE_Pressed, this, &ThisClass::AssignSelectedToQuickSlot1);
@@ -130,6 +129,7 @@ void AHeistPrototypeCharacter::SetInventoryOpen(const bool bOpen)
 		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 		PlayerController->SetInputMode(InputMode);
 		PlayerController->bShowMouseCursor = true;
+		InventoryWidget->SetKeyboardFocus();
 	}
 	else
 	{
@@ -217,24 +217,6 @@ void AHeistPrototypeCharacter::MoveSelectedLeft()
 void AHeistPrototypeCharacter::MoveSelectedRight()
 {
 	MoveSelectedItem(1, 0);
-}
-
-void AHeistPrototypeCharacter::RotateSelectedItem()
-{
-	if (!bInventoryOpen || SelectedInstanceId == INDEX_NONE)
-	{
-		return;
-	}
-
-	const TArray<FHeistInventoryItem> Items = InventoryComponent->GetItems();
-	const FHeistInventoryItem* Item = Items.FindByPredicate([this](const FHeistInventoryItem& Candidate)
-	{
-		return Candidate.InstanceId == SelectedInstanceId;
-	});
-	if (Item)
-	{
-		InventoryComponent->Server_RequestMoveItem(Item->InstanceId, Item->TopLeftIndex, !Item->bRotated);
-	}
 }
 
 void AHeistPrototypeCharacter::DropSelectedItem()

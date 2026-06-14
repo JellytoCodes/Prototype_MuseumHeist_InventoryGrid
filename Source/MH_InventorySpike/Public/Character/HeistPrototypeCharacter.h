@@ -40,7 +40,6 @@ private:
 	void MoveSelectedDown();
 	void MoveSelectedLeft();
 	void MoveSelectedRight();
-	void RotateSelectedItem();
 	void DropSelectedItem();
 	void AssignSelectedToQuickSlot0();
 	void AssignSelectedToQuickSlot1();
