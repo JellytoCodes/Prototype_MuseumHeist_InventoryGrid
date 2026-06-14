@@ -24,8 +24,12 @@ AHeistPrototypeCharacter::AHeistPrototypeCharacter()
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
 	CameraBoom->TargetArmLength = 900.0f;
-	CameraBoom->SetRelativeRotation(FRotator(-60.0f, 0.0f, 0.0f));
+	CameraBoom->SetUsingAbsoluteRotation(true);
+	CameraBoom->SetWorldRotation(FRotator(-60.0f, 0.0f, 0.0f));
 	CameraBoom->bUsePawnControlRotation = false;
+	CameraBoom->bInheritPitch = false;
+	CameraBoom->bInheritYaw = false;
+	CameraBoom->bInheritRoll = false;
 	CameraBoom->bDoCollisionTest = false;
 
 	TopDownCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("TopDownCamera"));
@@ -39,6 +43,15 @@ AHeistPrototypeCharacter::AHeistPrototypeCharacter()
 void AHeistPrototypeCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Existing Blueprint children may retain older component defaults, so enforce the fixed world rotation at runtime.
+	CameraBoom->SetUsingAbsoluteRotation(true);
+	CameraBoom->SetWorldRotation(FRotator(-60.0f, 0.0f, 0.0f));
+	CameraBoom->bUsePawnControlRotation = false;
+	CameraBoom->bInheritPitch = false;
+	CameraBoom->bInheritYaw = false;
+	CameraBoom->bInheritRoll = false;
+
 	InventoryComponent->OnInventoryChanged.AddUniqueDynamic(this, &ThisClass::HandleInventoryChanged);
 	InventoryComponent->OnItemDropped.AddUniqueDynamic(this, &ThisClass::HandleItemDropped);
 }
