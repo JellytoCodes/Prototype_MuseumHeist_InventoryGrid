@@ -30,6 +30,7 @@ public:
 	void NotifyDragFinished();
 
 protected:
+	virtual void NativeOnInitialized() override;
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
 	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
@@ -47,6 +48,7 @@ private:
 	void RefreshQuickSlots(const TArray<FHeistInventoryItem>& Items);
 	bool UpdatePlacementPreview(UHeistInventoryDragDropOperation* DragOperation, const FVector2D& ScreenPosition);
 	bool GetDropCoordinates(const FVector2D& ScreenPosition, const UHeistInventoryDragDropOperation* DragOperation, bool& bOutInsideGrid, int32& OutHoveredSlot, int32& OutTopLeftIndex) const;
+	void UpdateDragVisualAnchor(UHeistInventoryDragDropOperation* DragOperation) const;
 	void ClearPlacementPreview();
 
 	static constexpr float CellSize = 72.0f;

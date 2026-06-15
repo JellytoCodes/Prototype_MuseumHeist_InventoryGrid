@@ -35,6 +35,7 @@ void UHeistInventoryItemWidget::InitializeItem(
 	Item = InItem;
 	CellPitch = InCellPitch;
 	bDragVisual = bInDragVisual;
+	BuildLayout();
 	RefreshVisual();
 }
 
@@ -99,6 +100,9 @@ void UHeistInventoryItemWidget::NativeOnDragDetected(
 	DragOperation->GrabCellOffset = FIntPoint(
 		FMath::Clamp(FMath::FloorToInt(LocalPointer.X / CellPitch), 0, EffectiveWidth - 1),
 		FMath::Clamp(FMath::FloorToInt(LocalPointer.Y / CellPitch), 0, EffectiveHeight - 1));
+	DragOperation->GrabOffsetWithinCell = FVector2D(
+		FMath::Clamp(static_cast<float>(FMath::Fmod(LocalPointer.X, static_cast<double>(CellPitch))), 0.0f, CellPitch - 4.0f),
+		FMath::Clamp(static_cast<float>(FMath::Fmod(LocalPointer.Y, static_cast<double>(CellPitch))), 0.0f, CellPitch - 4.0f));
 
 	UHeistInventoryItemWidget* DragVisual = CreateWidget<UHeistInventoryItemWidget>(GetOwningPlayer(), StaticClass());
 	if (DragVisual)
@@ -106,7 +110,6 @@ void UHeistInventoryItemWidget::NativeOnDragDetected(
 		DragVisual->InitializeItem(nullptr, Item, CellPitch, true);
 		DragOperation->DefaultDragVisual = DragVisual;
 	}
-	DragOperation->Pivot = EDragPivot::MouseDown;
 	OutOperation = DragOperation;
 
 	if (InventoryRoot)

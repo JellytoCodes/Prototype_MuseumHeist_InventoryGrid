@@ -39,6 +39,14 @@ void UHeistInventoryDebugWidget::SetInventoryComponent(UHeistInventoryComponent*
 	{
 		InventoryComponent->OnInventoryChanged.AddUniqueDynamic(this, &ThisClass::RefreshInventory);
 	}
+
+	for (int32 QuickSlotIndex = 0; QuickSlotIndex < QuickSlotWidgets.Num(); ++QuickSlotIndex)
+	{
+		if (QuickSlotWidgets[QuickSlotIndex])
+		{
+			QuickSlotWidgets[QuickSlotIndex]->InitializeQuickSlot(InventoryComponent, QuickSlotIndex);
+		}
+	}
 	RefreshInventory();
 }
 
@@ -81,6 +89,7 @@ void UHeistInventoryDebugWidget::RequestRotateItem(const int32 InstanceId)
 void UHeistInventoryDebugWidget::NotifyDragStarted(UHeistInventoryDragDropOperation* DragOperation)
 {
 	ActiveDragOperation = DragOperation;
+	UpdateDragVisualAnchor(DragOperation);
 	SelectItem(DragOperation ? DragOperation->InstanceId : INDEX_NONE);
 	if (DragStatusText)
 	{
@@ -95,11 +104,16 @@ void UHeistInventoryDebugWidget::NotifyDragFinished()
 	ClearPlacementPreview();
 }
 
+void UHeistInventoryDebugWidget::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+	SetIsFocusable(true);
+	BuildPrototypeLayout();
+}
+
 void UHeistInventoryDebugWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
-	SetIsFocusable(true);
-	BuildPrototypeLayout();
 	if (InventoryComponent)
 	{
 		InventoryComponent->OnInventoryChanged.AddUniqueDynamic(this, &ThisClass::RefreshInventory);
@@ -122,27 +136,40 @@ FReply UHeistInventoryDebugWidget::NativeOnKeyDown(const FGeometry& InGeometry, 
 	{
 		if (ActiveDragOperation)
 		{
+			const bool bWasRotated = ActiveDragOperation->bRotated;
 			const int32 OldWidth = InventoryComponent->GetEffectiveWidth(
 				ActiveDragOperation->ItemSnapshot,
-				ActiveDragOperation->bRotated);
+				bWasRotated);
 			const int32 OldHeight = InventoryComponent->GetEffectiveHeight(
 				ActiveDragOperation->ItemSnapshot,
-				ActiveDragOperation->bRotated);
-			ActiveDragOperation->bRotated = !ActiveDragOperation->bRotated;
-			const int32 NewWidth = InventoryComponent->GetEffectiveWidth(
-				ActiveDragOperation->ItemSnapshot,
-				ActiveDragOperation->bRotated);
-			const int32 NewHeight = InventoryComponent->GetEffectiveHeight(
-				ActiveDragOperation->ItemSnapshot,
-				ActiveDragOperation->bRotated);
-			const float RelativeGrabX = (ActiveDragOperation->GrabCellOffset.X + 0.5f) / OldWidth;
-			const float RelativeGrabY = (ActiveDragOperation->GrabCellOffset.Y + 0.5f) / OldHeight;
-			ActiveDragOperation->GrabCellOffset.X = FMath::Clamp(FMath::FloorToInt(RelativeGrabX * NewWidth), 0, NewWidth - 1);
-			ActiveDragOperation->GrabCellOffset.Y = FMath::Clamp(FMath::FloorToInt(RelativeGrabY * NewHeight), 0, NewHeight - 1);
+				bWasRotated);
+			const FIntPoint OldGrabCell = ActiveDragOperation->GrabCellOffset;
+			const FVector2D OldGrabWithinCell = ActiveDragOperation->GrabOffsetWithinCell;
+
+			ActiveDragOperation->bRotated = !bWasRotated;
+			if (!bWasRotated)
+			{
+				ActiveDragOperation->GrabCellOffset = FIntPoint(
+					OldHeight - 1 - OldGrabCell.Y,
+					OldGrabCell.X);
+				ActiveDragOperation->GrabOffsetWithinCell = FVector2D(
+					CellSize - OldGrabWithinCell.Y,
+					OldGrabWithinCell.X);
+			}
+			else
+			{
+				ActiveDragOperation->GrabCellOffset = FIntPoint(
+					OldGrabCell.Y,
+					OldWidth - 1 - OldGrabCell.X);
+				ActiveDragOperation->GrabOffsetWithinCell = FVector2D(
+					OldGrabWithinCell.Y,
+					CellSize - OldGrabWithinCell.X);
+			}
 			if (UHeistInventoryItemWidget* DragVisual = Cast<UHeistInventoryItemWidget>(ActiveDragOperation->DefaultDragVisual))
 			{
 				DragVisual->SetPreviewRotation(ActiveDragOperation->bRotated);
 			}
+			UpdateDragVisualAnchor(ActiveDragOperation);
 			ClearPlacementPreview();
 			if (DragStatusText)
 			{
@@ -549,10 +576,37 @@ bool UHeistInventoryDebugWidget::GetDropCoordinates(
 	const int32 HoverX = FMath::Clamp(FMath::FloorToInt(LocalPosition.X / CellPitch), 0, InventoryComponent->GetGridWidth() - 1);
 	const int32 HoverY = FMath::Clamp(FMath::FloorToInt(LocalPosition.Y / CellPitch), 0, InventoryComponent->GetGridHeight() - 1);
 	OutHoveredSlot = InventoryComponent->CoordToIndex(HoverX, HoverY);
+
 	OutTopLeftIndex = InventoryComponent->CoordToIndex(
 		HoverX - DragOperation->GrabCellOffset.X,
 		HoverY - DragOperation->GrabCellOffset.Y);
 	return true;
+}
+
+void UHeistInventoryDebugWidget::UpdateDragVisualAnchor(UHeistInventoryDragDropOperation* DragOperation) const
+{
+	if (!InventoryComponent || !DragOperation)
+	{
+		return;
+	}
+
+	const int32 Width = InventoryComponent->GetEffectiveWidth(
+		DragOperation->ItemSnapshot,
+		DragOperation->bRotated);
+	const int32 Height = InventoryComponent->GetEffectiveHeight(
+		DragOperation->ItemSnapshot,
+		DragOperation->bRotated);
+	const FVector2D VisualSize(
+		Width * CellPitch - CellGap,
+		Height * CellPitch - CellGap);
+	const FVector2D MouseAnchor(
+		DragOperation->GrabCellOffset.X * CellPitch + DragOperation->GrabOffsetWithinCell.X,
+		DragOperation->GrabCellOffset.Y * CellPitch + DragOperation->GrabOffsetWithinCell.Y);
+
+	DragOperation->Pivot = EDragPivot::TopLeft;
+	DragOperation->Offset = FVector2D(
+		-MouseAnchor.X / VisualSize.X,
+		-MouseAnchor.Y / VisualSize.Y);
 }
 
 void UHeistInventoryDebugWidget::ClearPlacementPreview()

@@ -7,6 +7,7 @@
 void UHeistInventorySlotWidget::InitializeSlot(const int32 InSlotIndex)
 {
 	SlotIndex = InSlotIndex;
+	BuildLayout();
 	RefreshVisual();
 }
 

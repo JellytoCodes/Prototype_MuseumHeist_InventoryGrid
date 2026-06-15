@@ -26,6 +26,9 @@ public:
 	FIntPoint GrabCellOffset = FIntPoint::ZeroValue;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Inventory Drag")
+	FVector2D GrabOffsetWithinCell = FVector2D::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Inventory Drag")
 	FHeistInventoryItem ItemSnapshot;
 
 	UPROPERTY(Transient)

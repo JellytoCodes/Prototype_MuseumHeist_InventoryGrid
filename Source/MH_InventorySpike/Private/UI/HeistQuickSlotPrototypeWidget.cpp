@@ -11,6 +11,7 @@ void UHeistQuickSlotPrototypeWidget::InitializeQuickSlot(UHeistInventoryComponen
 {
 	InventoryComponent = InInventoryComponent;
 	QuickSlotIndex = InQuickSlotIndex;
+	BuildLayout();
 	RefreshVisual();
 }
 
