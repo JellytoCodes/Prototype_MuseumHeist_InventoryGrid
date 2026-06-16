@@ -6,8 +6,12 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Interaction/HeistPickupActor.h"
 #include "Inventory/HeistInventoryComponent.h"
+#include "InputCoreTypes.h"
 #include "UI/HeistInventoryDebugWidget.h"
+#include "Engine/Engine.h"
 #include "EngineUtils.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogHeistInventoryCharacter, Log, All);
 
 AHeistPrototypeCharacter::AHeistPrototypeCharacter()
 {
@@ -75,6 +79,8 @@ void AHeistPrototypeCharacter::SetupPlayerInputComponent(UInputComponent* Player
 	PlayerInputComponent->BindAction(TEXT("InventoryQuickSlot0"), IE_Pressed, this, &ThisClass::AssignSelectedToQuickSlot0);
 	PlayerInputComponent->BindAction(TEXT("InventoryQuickSlot1"), IE_Pressed, this, &ThisClass::AssignSelectedToQuickSlot1);
 	PlayerInputComponent->BindAction(TEXT("InventoryQuickSlot2"), IE_Pressed, this, &ThisClass::AssignSelectedToQuickSlot2);
+	PlayerInputComponent->BindKey(EKeys::F8, IE_Pressed, this, &ThisClass::RunInventoryRejectionTests);
+	PlayerInputComponent->BindKey(EKeys::F9, IE_Pressed, this, &ThisClass::PrintInventoryDebugState);
 }
 
 void AHeistPrototypeCharacter::MoveForward(const float Value)
@@ -280,6 +286,48 @@ void AHeistPrototypeCharacter::RefreshSelectedItem()
 	}
 }
 
+void AHeistPrototypeCharacter::RunInventoryRejectionTests()
+{
+	const TArray<FHeistInventoryItem> Items = InventoryComponent->GetItems();
+	const int32 ExistingInstanceId = Items.IsEmpty() ? MAX_int32 - 1 : Items[0].InstanceId;
+	const bool bExistingRotation = Items.IsEmpty() ? false : Items[0].bRotated;
+
+	UE_LOG(LogHeistInventoryCharacter, Display, TEXT("Sending intentional invalid inventory requests from %s"), *GetName());
+	InventoryComponent->Server_RequestMoveItem(ExistingInstanceId, INDEX_NONE, bExistingRotation);
+	InventoryComponent->Server_RequestAssignQuickSlot(UHeistInventoryComponent::QuickSlotCount, ExistingInstanceId);
+	InventoryComponent->Server_RequestAssignQuickSlot(0, MAX_int32);
+	InventoryComponent->Server_RequestDropItem(MAX_int32);
+}
+
+void AHeistPrototypeCharacter::PrintInventoryDebugState()
+{
+	const FString DebugGrid = InventoryComponent->GetDebugInventoryString();
+	const FString ValidationReport = InventoryComponent->GetInventoryValidationReport();
+	const FString ScreenMessage = FString::Printf(
+		TEXT("F9 Inventory Debug: %s | Items %d | Used %d/%d | Weight %d | Score %d | %s"),
+		*GetName(),
+		InventoryComponent->GetItems().Num(),
+		InventoryComponent->GetUsedSlotCount(),
+		InventoryComponent->GetGridWidth() * InventoryComponent->GetGridHeight(),
+		InventoryComponent->GetTotalWeight(),
+		InventoryComponent->GetTotalScore(),
+		*ValidationReport);
+
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(INDEX_NONE, 8.0f, FColor::Cyan, ScreenMessage);
+		GEngine->AddOnScreenDebugMessage(INDEX_NONE, 8.0f, FColor::Cyan, TEXT("Full F9 inventory grid dump written to Output Log."));
+	}
+
+	UE_LOG(
+		LogHeistInventoryCharacter,
+		Display,
+		TEXT("%s local inventory state:\n%s\n%s"),
+		*GetName(),
+		*DebugGrid,
+		*ValidationReport);
+}
+
 void AHeistPrototypeCharacter::HandleInventoryChanged()
 {
 	const TArray<FHeistInventoryItem> Items = InventoryComponent->GetItems();
@@ -317,6 +365,11 @@ void AHeistPrototypeCharacter::Server_RequestInteract_Implementation()
 	float ClosestDistanceSquared = FMath::Square(InteractionRadius);
 	for (AHeistPickupActor* Pickup : TActorRange<AHeistPickupActor>(GetWorld()))
 	{
+		if (!IsValid(Pickup) || Pickup->IsActorBeingDestroyed())
+		{
+			continue;
+		}
+
 		const float DistanceSquared = FVector::DistSquared(GetActorLocation(), Pickup->GetActorLocation());
 		if (DistanceSquared <= ClosestDistanceSquared)
 		{

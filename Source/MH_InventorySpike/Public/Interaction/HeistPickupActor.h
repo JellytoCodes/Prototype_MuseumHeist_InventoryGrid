@@ -77,4 +77,7 @@ private:
 
 	UPROPERTY(ReplicatedUsing = OnRep_ItemData, EditAnywhere, Category = "Pickup|Item", meta = (ClampMin = "0"))
 	int32 ItemScoreValue = 100;
+
+	UPROPERTY(Transient)
+	bool bPickupClaimed = false;
 };

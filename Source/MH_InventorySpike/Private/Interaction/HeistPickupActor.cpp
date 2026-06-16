@@ -7,6 +7,8 @@
 #include "Net/UnrealNetwork.h"
 #include "UObject/ConstructorHelpers.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogHeistPickup, Log, All);
+
 AHeistPickupActor::AHeistPickupActor()
 {
 	PrimaryActorTick.bCanEverTick = false;
@@ -77,16 +79,28 @@ void AHeistPickupActor::InitializeFromInventoryItem(const FHeistInventoryItem& I
 
 bool AHeistPickupActor::TryPickup(UHeistInventoryComponent* InventoryComponent)
 {
-	if (!HasAuthority() || !InventoryComponent)
+	if (!HasAuthority() || !InventoryComponent || bPickupClaimed || IsActorBeingDestroyed())
 	{
+		UE_LOG(
+			LogHeistPickup,
+			Verbose,
+			TEXT("Pickup rejected actor=%s inventory=%s claimed=%s destroying=%s"),
+			*GetName(),
+			*GetNameSafe(InventoryComponent),
+			bPickupClaimed ? TEXT("true") : TEXT("false"),
+			IsActorBeingDestroyed() ? TEXT("true") : TEXT("false"));
 		return false;
 	}
 
+	bPickupClaimed = true;
 	if (!InventoryComponent->AddItem(ItemId, ItemTag, ItemWidth, ItemHeight, ItemWeight, ItemScoreValue))
 	{
+		bPickupClaimed = false;
+		UE_LOG(LogHeistPickup, Display, TEXT("Pickup claim released actor=%s: target inventory rejected item"), *GetName());
 		return false;
 	}
 
+	UE_LOG(LogHeistPickup, Display, TEXT("Pickup claimed actor=%s inventory=%s"), *GetName(), *GetNameSafe(InventoryComponent));
 	Destroy();
 	return true;
 }

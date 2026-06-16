@@ -7,6 +7,10 @@
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FHeistInventoryChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FHeistItemDropped, FHeistInventoryItem, DroppedItem);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+	FHeistInventoryRequestResolved,
+	EHeistInventoryRequestType, RequestType,
+	EHeistInventoryRequestResult, Result);
 
 UCLASS(ClassGroup = (MuseumHeist), meta = (BlueprintSpawnableComponent))
 class MH_INVENTORYSPIKE_API UHeistInventoryComponent : public UActorComponent
@@ -25,6 +29,9 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Inventory")
 	FHeistItemDropped OnItemDropped;
+
+	UPROPERTY(BlueprintAssignable, Category = "Inventory|Replication")
+	FHeistInventoryRequestResolved OnInventoryRequestResolved;
 
 	UFUNCTION(BlueprintPure, Category = "Inventory|Grid")
 	int32 GetGridWidth() const { return GridWidth; }
@@ -92,6 +99,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Inventory|Debug")
 	FString GetDebugInventoryString() const;
 
+	UFUNCTION(BlueprintPure, Category = "Inventory|Debug")
+	FString GetInventoryValidationReport() const;
+
 	UFUNCTION(Server, Reliable, Category = "Inventory|Server Requests")
 	void Server_RequestMoveItem(int32 InstanceId, int32 NewTopLeftIndex, bool bRotated);
 
@@ -100,6 +110,9 @@ public:
 
 	UFUNCTION(Server, Reliable, Category = "Inventory|Server Requests")
 	void Server_RequestAssignQuickSlot(int32 SlotIndex, int32 InstanceId);
+
+	UFUNCTION(Client, Reliable, Category = "Inventory|Server Requests")
+	void Client_InventoryRequestResolved(EHeistInventoryRequestType RequestType, EHeistInventoryRequestResult Result);
 
 	UFUNCTION(BlueprintNativeEvent, Category = "Inventory|Authority")
 	bool IsInventoryMutationAllowed() const;
@@ -132,4 +145,5 @@ private:
 	void BuildOccupancyGrid(TArray<int32>& OutOccupancy, int32 IgnoredInstanceId = INDEX_NONE) const;
 	void ClearQuickSlotReferences(int32 InstanceId);
 	void NotifyInventoryChanged();
+	void ResolveServerRequest(EHeistInventoryRequestType RequestType, EHeistInventoryRequestResult Result);
 };

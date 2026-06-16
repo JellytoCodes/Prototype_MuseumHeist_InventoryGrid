@@ -25,6 +25,32 @@ namespace
 		Font.Size = Size;
 		TextBlock->SetFont(Font);
 	}
+
+	FString GetInventoryRequestLabel(const EHeistInventoryRequestType RequestType)
+	{
+		switch (RequestType)
+		{
+		case EHeistInventoryRequestType::MoveItem: return TEXT("Move");
+		case EHeistInventoryRequestType::DropItem: return TEXT("Drop");
+		case EHeistInventoryRequestType::AssignQuickSlot: return TEXT("QuickSlot");
+		default: return TEXT("Unknown");
+		}
+	}
+
+	FString GetInventoryResultLabel(const EHeistInventoryRequestResult Result)
+	{
+		switch (Result)
+		{
+		case EHeistInventoryRequestResult::Success: return TEXT("confirmed by server");
+		case EHeistInventoryRequestResult::AuthorityDenied: return TEXT("authority denied");
+		case EHeistInventoryRequestResult::ItemNotFound: return TEXT("item not found");
+		case EHeistInventoryRequestResult::InvalidPlacement: return TEXT("invalid placement");
+		case EHeistInventoryRequestResult::InvalidQuickSlotIndex: return TEXT("invalid QuickSlot index");
+		case EHeistInventoryRequestResult::InvalidQuickSlotItem: return TEXT("invalid QuickSlot item");
+		case EHeistInventoryRequestResult::MutationRejected: return TEXT("mutation rejected");
+		default: return TEXT("unknown result");
+		}
+	}
 }
 
 void UHeistInventoryDebugWidget::SetInventoryComponent(UHeistInventoryComponent* InInventoryComponent)
@@ -32,12 +58,14 @@ void UHeistInventoryDebugWidget::SetInventoryComponent(UHeistInventoryComponent*
 	if (InventoryComponent)
 	{
 		InventoryComponent->OnInventoryChanged.RemoveDynamic(this, &ThisClass::RefreshInventory);
+		InventoryComponent->OnInventoryRequestResolved.RemoveDynamic(this, &ThisClass::HandleInventoryRequestResolved);
 	}
 
 	InventoryComponent = InInventoryComponent;
 	if (InventoryComponent)
 	{
 		InventoryComponent->OnInventoryChanged.AddUniqueDynamic(this, &ThisClass::RefreshInventory);
+		InventoryComponent->OnInventoryRequestResolved.AddUniqueDynamic(this, &ThisClass::HandleInventoryRequestResolved);
 	}
 
 	for (int32 QuickSlotIndex = 0; QuickSlotIndex < QuickSlotWidgets.Num(); ++QuickSlotIndex)
@@ -117,6 +145,7 @@ void UHeistInventoryDebugWidget::NativeConstruct()
 	if (InventoryComponent)
 	{
 		InventoryComponent->OnInventoryChanged.AddUniqueDynamic(this, &ThisClass::RefreshInventory);
+		InventoryComponent->OnInventoryRequestResolved.AddUniqueDynamic(this, &ThisClass::HandleInventoryRequestResolved);
 	}
 	RefreshInventory();
 }
@@ -126,8 +155,32 @@ void UHeistInventoryDebugWidget::NativeDestruct()
 	if (InventoryComponent)
 	{
 		InventoryComponent->OnInventoryChanged.RemoveDynamic(this, &ThisClass::RefreshInventory);
+		InventoryComponent->OnInventoryRequestResolved.RemoveDynamic(this, &ThisClass::HandleInventoryRequestResolved);
 	}
 	Super::NativeDestruct();
+}
+
+void UHeistInventoryDebugWidget::HandleInventoryRequestResolved(
+	const EHeistInventoryRequestType RequestType,
+	const EHeistInventoryRequestResult Result)
+{
+	if (Result != EHeistInventoryRequestResult::Success)
+	{
+		RefreshInventory();
+	}
+
+	if (DragStatusText)
+	{
+		const bool bSuccess = Result == EHeistInventoryRequestResult::Success;
+		DragStatusText->SetText(FText::FromString(FString::Printf(
+			TEXT("%s: %s%s"),
+			*GetInventoryRequestLabel(RequestType),
+			*GetInventoryResultLabel(Result),
+			bSuccess ? TEXT("") : TEXT("; restored confirmed state"))));
+		DragStatusText->SetColorAndOpacity(FSlateColor(bSuccess
+			? FLinearColor(0.25f, 0.9f, 0.42f)
+			: FLinearColor(0.95f, 0.35f, 0.25f)));
+	}
 }
 
 FReply UHeistInventoryDebugWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)

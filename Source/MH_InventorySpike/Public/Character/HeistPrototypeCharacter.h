@@ -47,6 +47,8 @@ private:
 	void MoveSelectedItem(int32 DeltaX, int32 DeltaY);
 	void AssignSelectedToQuickSlot(int32 QuickSlotIndex);
 	void RefreshSelectedItem();
+	void RunInventoryRejectionTests();
+	void PrintInventoryDebugState();
 
 	UFUNCTION()
 	void HandleInventoryChanged();

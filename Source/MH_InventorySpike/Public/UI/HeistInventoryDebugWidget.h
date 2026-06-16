@@ -42,6 +42,9 @@ private:
 	UFUNCTION()
 	void RefreshInventory();
 
+	UFUNCTION()
+	void HandleInventoryRequestResolved(EHeistInventoryRequestType RequestType, EHeistInventoryRequestResult Result);
+
 	void BuildPrototypeLayout();
 	void RebuildItemWidgets(const TArray<FHeistInventoryItem>& Items);
 	void RefreshSelectionDetails(const TArray<FHeistInventoryItem>& Items);

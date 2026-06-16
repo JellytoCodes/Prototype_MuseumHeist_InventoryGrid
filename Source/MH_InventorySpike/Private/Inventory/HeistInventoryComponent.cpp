@@ -3,6 +3,8 @@
 #include "GameFramework/Actor.h"
 #include "Net/UnrealNetwork.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogHeistInventory, Log, All);
+
 UHeistInventoryComponent::UHeistInventoryComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
@@ -92,6 +94,11 @@ bool UHeistInventoryComponent::AddItem(
 {
 	if (!HasMutationAuthority() || ItemId.IsNone() || Width <= 0 || Height <= 0 || Weight < 0 || ScoreValue < 0)
 	{
+		return false;
+	}
+	if (NextInstanceId <= 0 || NextInstanceId == MAX_int32 || FindItemIndexByInstanceId(NextInstanceId) != INDEX_NONE)
+	{
+		UE_LOG(LogHeistInventory, Error, TEXT("AddItem rejected for %s: unsafe NextInstanceId=%d"), *GetNameSafe(GetOwner()), NextInstanceId);
 		return false;
 	}
 
@@ -313,34 +320,172 @@ FString UHeistInventoryComponent::GetDebugInventoryString() const
 	return Result;
 }
 
+FString UHeistInventoryComponent::GetInventoryValidationReport() const
+{
+	TArray<FString> Errors;
+	TSet<int32> SeenInstanceIds;
+	int32 HighestInstanceId = 0;
+	TArray<int32> Occupancy;
+	Occupancy.Init(INDEX_NONE, GridWidth * GridHeight);
+
+	for (const FHeistInventoryItem& Item : Items)
+	{
+		if (Item.InstanceId <= 0 || SeenInstanceIds.Contains(Item.InstanceId))
+		{
+			Errors.Add(FString::Printf(TEXT("Invalid or duplicate InstanceId %d"), Item.InstanceId));
+		}
+		SeenInstanceIds.Add(Item.InstanceId);
+		HighestInstanceId = FMath::Max(HighestInstanceId, Item.InstanceId);
+
+		if (!IsValidSlotIndex(Item.TopLeftIndex) || Item.Width <= 0 || Item.Height <= 0)
+		{
+			Errors.Add(FString::Printf(TEXT("Item #%d has invalid placement metadata"), Item.InstanceId));
+			continue;
+		}
+
+		const FIntPoint TopLeft = IndexToCoord(Item.TopLeftIndex);
+		const int32 EffectiveWidth = GetEffectiveWidth(Item, Item.bRotated);
+		const int32 EffectiveHeight = GetEffectiveHeight(Item, Item.bRotated);
+		if (TopLeft.X + EffectiveWidth > GridWidth || TopLeft.Y + EffectiveHeight > GridHeight)
+		{
+			Errors.Add(FString::Printf(TEXT("Item #%d exceeds grid bounds"), Item.InstanceId));
+			continue;
+		}
+
+		for (int32 Y = TopLeft.Y; Y < TopLeft.Y + EffectiveHeight; ++Y)
+		{
+			for (int32 X = TopLeft.X; X < TopLeft.X + EffectiveWidth; ++X)
+			{
+				const int32 SlotIndex = CoordToIndex(X, Y);
+				if (!Occupancy.IsValidIndex(SlotIndex))
+				{
+					Errors.Add(FString::Printf(TEXT("Item #%d references invalid slot"), Item.InstanceId));
+					continue;
+				}
+				if (Occupancy[SlotIndex] != INDEX_NONE)
+				{
+					Errors.Add(FString::Printf(
+						TEXT("Items #%d and #%d overlap at slot %d"),
+						Occupancy[SlotIndex],
+						Item.InstanceId,
+						SlotIndex));
+				}
+				Occupancy[SlotIndex] = Item.InstanceId;
+			}
+		}
+	}
+
+	if (QuickSlots.Num() != QuickSlotCount)
+	{
+		Errors.Add(FString::Printf(TEXT("QuickSlot count is %d, expected %d"), QuickSlots.Num(), QuickSlotCount));
+	}
+	for (int32 SlotIndex = 0; SlotIndex < QuickSlots.Num(); ++SlotIndex)
+	{
+		const int32 InstanceId = QuickSlots[SlotIndex];
+		if (InstanceId != INDEX_NONE && !SeenInstanceIds.Contains(InstanceId))
+		{
+			Errors.Add(FString::Printf(TEXT("QuickSlot %d has stale InstanceId %d"), SlotIndex, InstanceId));
+		}
+	}
+	if (HasMutationAuthority() && NextInstanceId <= HighestInstanceId)
+	{
+		Errors.Add(FString::Printf(
+			TEXT("NextInstanceId %d is not above active maximum %d"),
+			NextInstanceId,
+			HighestInstanceId));
+	}
+
+	if (!Errors.IsEmpty())
+	{
+		return FString::Printf(TEXT("INVALID:\n%s"), *FString::Join(Errors, TEXT("\n")));
+	}
+
+	return HasMutationAuthority()
+		? FString::Printf(TEXT("VALID SERVER: %d items, %d used slots, NextInstanceId=%d"), Items.Num(), GetUsedSlotCount(), NextInstanceId)
+		: FString::Printf(TEXT("VALID CLIENT SNAPSHOT: %d items, %d used slots"), Items.Num(), GetUsedSlotCount());
+}
+
 void UHeistInventoryComponent::Server_RequestMoveItem_Implementation(
 	const int32 InstanceId,
 	const int32 NewTopLeftIndex,
 	const bool bRotated)
 {
+	EHeistInventoryRequestResult Result = EHeistInventoryRequestResult::AuthorityDenied;
 	if (CanProcessServerRequest())
 	{
-		MoveItem(InstanceId, NewTopLeftIndex, bRotated);
+		const int32 ItemIndex = FindItemIndexByInstanceId(InstanceId);
+		if (!Items.IsValidIndex(ItemIndex))
+		{
+			Result = EHeistInventoryRequestResult::ItemNotFound;
+		}
+		else if (!CanPlaceItem(Items[ItemIndex], NewTopLeftIndex, bRotated, InstanceId))
+		{
+			Result = EHeistInventoryRequestResult::InvalidPlacement;
+		}
+		else
+		{
+			Result = MoveItem(InstanceId, NewTopLeftIndex, bRotated)
+				? EHeistInventoryRequestResult::Success
+				: EHeistInventoryRequestResult::MutationRejected;
+		}
 	}
+	ResolveServerRequest(EHeistInventoryRequestType::MoveItem, Result);
 }
 
 void UHeistInventoryComponent::Server_RequestDropItem_Implementation(const int32 InstanceId)
 {
-	if (!CanProcessServerRequest())
+	EHeistInventoryRequestResult Result = EHeistInventoryRequestResult::AuthorityDenied;
+	if (CanProcessServerRequest())
 	{
-		return;
+		if (FindItemIndexByInstanceId(InstanceId) == INDEX_NONE)
+		{
+			Result = EHeistInventoryRequestResult::ItemNotFound;
+		}
+		else
+		{
+			FHeistInventoryItem DroppedItem;
+			Result = DropItem(InstanceId, DroppedItem)
+				? EHeistInventoryRequestResult::Success
+				: EHeistInventoryRequestResult::MutationRejected;
+		}
 	}
-
-	FHeistInventoryItem DroppedItem;
-	DropItem(InstanceId, DroppedItem);
+	ResolveServerRequest(EHeistInventoryRequestType::DropItem, Result);
 }
 
 void UHeistInventoryComponent::Server_RequestAssignQuickSlot_Implementation(const int32 SlotIndex, const int32 InstanceId)
 {
+	EHeistInventoryRequestResult Result = EHeistInventoryRequestResult::AuthorityDenied;
 	if (CanProcessServerRequest())
 	{
-		AssignQuickSlot(SlotIndex, InstanceId);
+		if (!QuickSlots.IsValidIndex(SlotIndex))
+		{
+			Result = EHeistInventoryRequestResult::InvalidQuickSlotIndex;
+		}
+		else if (FindItemIndexByInstanceId(InstanceId) == INDEX_NONE)
+		{
+			Result = EHeistInventoryRequestResult::InvalidQuickSlotItem;
+		}
+		else
+		{
+			Result = AssignQuickSlot(SlotIndex, InstanceId)
+				? EHeistInventoryRequestResult::Success
+				: EHeistInventoryRequestResult::MutationRejected;
+		}
 	}
+	ResolveServerRequest(EHeistInventoryRequestType::AssignQuickSlot, Result);
+}
+
+void UHeistInventoryComponent::Client_InventoryRequestResolved_Implementation(
+	const EHeistInventoryRequestType RequestType,
+	const EHeistInventoryRequestResult Result)
+{
+	if (Result != EHeistInventoryRequestResult::Success)
+	{
+		// Rejected requests do not change replicated properties, so force the UI to
+		// rebuild from the unchanged confirmed state instead of retaining preview state.
+		OnInventoryChanged.Broadcast();
+	}
+	OnInventoryRequestResolved.Broadcast(RequestType, Result);
 }
 
 bool UHeistInventoryComponent::IsInventoryMutationAllowed_Implementation() const
@@ -352,8 +497,8 @@ void UHeistInventoryComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(UHeistInventoryComponent, Items);
-	DOREPLIFETIME(UHeistInventoryComponent, QuickSlots);
+	DOREPLIFETIME_CONDITION(UHeistInventoryComponent, Items, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(UHeistInventoryComponent, QuickSlots, COND_OwnerOnly);
 }
 
 void UHeistInventoryComponent::OnRep_InventoryState()
@@ -426,4 +571,32 @@ void UHeistInventoryComponent::NotifyInventoryChanged()
 	{
 		Owner->ForceNetUpdate();
 	}
+}
+
+void UHeistInventoryComponent::ResolveServerRequest(
+	const EHeistInventoryRequestType RequestType,
+	const EHeistInventoryRequestResult Result)
+{
+	if (Result == EHeistInventoryRequestResult::Success)
+	{
+		UE_LOG(
+			LogHeistInventory,
+			Verbose,
+			TEXT("Inventory request owner=%s type=%d result=Success state=%s"),
+			*GetNameSafe(GetOwner()),
+			static_cast<int32>(RequestType),
+			*GetInventoryValidationReport());
+	}
+	else
+	{
+		UE_LOG(
+			LogHeistInventory,
+			Warning,
+			TEXT("Inventory request rejected owner=%s type=%d result=%d state=%s"),
+			*GetNameSafe(GetOwner()),
+			static_cast<int32>(RequestType),
+			static_cast<int32>(Result),
+			*GetInventoryValidationReport());
+	}
+	Client_InventoryRequestResolved(RequestType, Result);
 }

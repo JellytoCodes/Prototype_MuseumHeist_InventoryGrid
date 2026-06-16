@@ -4,6 +4,26 @@
 #include "GameplayTagContainer.h"
 #include "HeistInventoryTypes.generated.h"
 
+UENUM(BlueprintType)
+enum class EHeistInventoryRequestType : uint8
+{
+	MoveItem,
+	DropItem,
+	AssignQuickSlot
+};
+
+UENUM(BlueprintType)
+enum class EHeistInventoryRequestResult : uint8
+{
+	Success,
+	AuthorityDenied,
+	ItemNotFound,
+	InvalidPlacement,
+	InvalidQuickSlotIndex,
+	InvalidQuickSlotItem,
+	MutationRejected
+};
+
 USTRUCT(BlueprintType)
 struct MH_INVENTORYSPIKE_API FHeistInventoryItem
 {
